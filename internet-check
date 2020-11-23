@@ -1,0 +1,143 @@
+#!/usr/bin/env python
+# vim: tabstop=8 expandtab shiftwidth=4 softtabstop=4
+# -*- coding: utf-8 -*-
+"""
+This script checks for internet connection downtimes and reports them
+as soon as the network link works again.
+
+:copyright: (c) 2020 Paolo Bernardi.
+:license: GNU AGPL version 3, see LICENSE for more details.
+"""
+
+from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+import json
+import os
+from pathlib import Path
+import smtplib
+import socket
+import ssl
+import sys
+from typing import Optional
+import urllib.request
+
+import pytz
+
+
+# Check whether the settings are in place
+try:
+    from settings import *
+except ModuleNotFoundError:
+    print("Please create a settings.py configuration file prior to running the script.")
+    print("You may use settings.py-sample as reference.")
+    sys.exit(1)
+
+
+TZ = pytz.timezone(TIME_ZONE)
+TSTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+TSTAMP_FILE = Path.home().joinpath(".internet-downtime-started")
+
+
+def internet(host: str = "8.8.8.8", port: int = 53, timeout: int = 3) -> bool:
+    """
+    8.8.8.8 (google-public-dns-a.google.com) is Google's famous DNS server.
+    Credits: https://gist.github.com/7h3rAm/a4c3de8e502f755a7253
+    """
+    try:
+        socket.setdefaulttimeout(timeout)
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
+        return True
+    except socket.error as ex:
+        return False
+
+
+def get_ip() -> Optional[str]:
+    """
+    Try to detect the public IP address of this computer.
+    """
+    try:
+        req = urllib.request.Request(
+            "https://www.bernardi.cloud/ipinfo/", headers={"User-Agent": "Mozilla/5.0"}
+        )
+        payload = urllib.request.urlopen(req).read().decode()
+        ipinfo = json.loads(payload)
+        return ipinfo["ip"]
+    except:
+        return None
+
+
+def send_email(to: str, subject: str, body: str):
+    """
+    Send an email using the configuration parameters from settings.py.
+    """
+    if EMAIL_USE_TLS:
+        smtp = smtplib.SMTP_SSL  # type: ignore
+    else:
+        smtp = smtplib.SMTP  # type: ignore
+    with smtp(EMAIL_HOST, EMAIL_PORT) as server:
+        server.login(EMAIL_HOST_USER, EMAIL_HOST_PASSWORD)
+        message = MIMEMultipart("alternative")
+        message["Subject"] = subject
+        message["From"] = EMAIL_FROM
+        message.attach(MIMEText(body, "plain"))
+        message["To"] = to
+        server.sendmail(EMAIL_FROM, to, message.as_string())
+
+
+def internet_down():
+    """
+    Function to be called the first time that
+    an Internet downtime is detected.
+    """
+    if os.path.exists(TSTAMP_FILE):
+        return
+    with open(TSTAMP_FILE, "w") as f:
+        f.write(str(datetime.utcnow().timestamp()))
+
+
+def utc_to_local(tstamp: datetime) -> datetime:
+    return tstamp.replace(tzinfo=pytz.utc).astimezone(TZ)
+
+
+def internet_up():
+    """
+    Function to be called as soon as Internet
+    works again, after a downtime.
+    """
+    if not os.path.exists(TSTAMP_FILE):
+        return
+    with open(TSTAMP_FILE) as f:
+        try:
+            before = datetime.fromtimestamp(float(f.read().strip()))
+        except ValueError:
+            # If the timestamp file content is corrupted restart
+            # the state machine from scratch
+            os.unlink(TSTAMP_FILE)
+            return
+        now = datetime.utcnow()
+        delta = now - before
+        minutes = delta.days * 1440 + delta.seconds / 60
+        before_str = utc_to_local(before).strftime(TSTAMP_FORMAT)
+        now_str = utc_to_local(now).strftime(TSTAMP_FORMAT)
+        ip = get_ip()
+        if ip:
+            ip_str = f"IP address  {ip}\n"
+        else:
+            ip_str = ""
+        message = f"""The Internet link was down for {minutes:.2f} minutes.
+
+Link down   {before_str}
+Link up     {now_str}
+{ip_str}
+--
+Internet Check"""
+        send_email(EMAIL_TO, EMAIL_SUBJECT, message)
+    os.unlink(TSTAMP_FILE)
+
+
+if __name__ == "__main__":
+    if internet():
+        internet_up()
+    else:
+        internet_down()

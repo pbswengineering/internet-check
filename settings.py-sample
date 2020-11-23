@@ -1,0 +1,9 @@
+EMAIL_USE_TLS = True
+EMAIL_HOST = "smtp.gmail.com"
+EMAIL_HOST_USER = "somerandomemail@gmail.com"
+EMAIL_HOST_PASSWORD = "myverysecurepassword"
+EMAIL_PORT = 587
+EMAIL_FROM = "somerandomemail@gmail.com"
+EMAIL_SUBJECT = "Internet downtime"
+EMAIL_TO = "myemailaddress@mydomain.com"
+TIME_ZONE = "Europe/Rome"
